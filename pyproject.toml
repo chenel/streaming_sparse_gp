@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "streaming-sparse-gp"
+version = "0.1.0"
+description = "Streaming sparse Gaussian process approximations (Bui, Nguyen & Turner, NeurIPS 2017)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+dependencies = [
+    "numpy<2",
+    "scipy",
+    "tensorflow>=2.4",
+    "gpflow>=2.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/thangbui/streaming_sparse_gp"
+
+# The modules live in code/; expose them as the `streaming_sparse_gp` package
+# so `import streaming_sparse_gp` works without moving any files.
+[tool.setuptools]
+packages = ["streaming_sparse_gp"]
+package-dir = { "streaming_sparse_gp" = "code" }
