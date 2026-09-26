@@ -61,7 +61,12 @@ class SGPR_PEP(GPModel, InternalDataTrainingLossMixin):
         D = tf.eye(Mb, dtype=d1.dtype) + d1
         LD = tf.linalg.cholesky(D)
 
-        Sinv_y = self.Y / tf.reshape(Dff, [self.num_data, 1])
+        # err, not self.Y: the objective pairs -0.5*sum(err^2/Dff) against
+        # +0.5*sum(LDinv_c^2), so both must be built from the same residual.  With a
+        # zero mean function they agree and their divergences as Dff -> 0 cancel; with
+        # a non-zero one, using raw Y here leaves the bound unbounded above, and the
+        # optimizer drives the noise to its floor and the kernel variance to zero.
+        Sinv_y = err / tf.reshape(Dff, [self.num_data, 1])
         c = tf.matmul(Lbinv_Kbf, Sinv_y)
         LDinv_c = tf.linalg.triangular_solve(LD, c, lower=True)
 

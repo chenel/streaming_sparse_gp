@@ -62,7 +62,8 @@ class OSGPR_VFE(GPModel, InternalDataTrainingLossMixin):
         err = self.Y - self.mean_function(self.X)
 
         Sainv_ma = tf.linalg.solve(Saa, ma)
-        Sinv_y = self.Y / sigma2
+        # err, not self.Y -- see the note in sgpr.py:SGPR_PEP._common_terms
+        Sinv_y = err / sigma2
         c1 = tf.matmul(Kbf, Sinv_y)
         c2 = tf.matmul(Kba, Sainv_ma)
         c = c1 + c2
@@ -280,7 +281,8 @@ class OSGPR_PEP(GPModel, InternalDataTrainingLossMixin):
         Lbinv_Kba_Da = tf.linalg.matrix_transpose(Da_Kab_Lbinv)
         Lbinv_Kba_Da_LM = tf.matmul(Lbinv_Kba_Da, LM)
         Qinv_LMT_Sainv_ma = tf.linalg.solve(Q, LMT_Sainv_ma)
-        Sinv_y = self.Y / tf.reshape(Dff, [self.num_data, 1])
+        # err, not self.Y -- see the note in sgpr.py:SGPR_PEP._common_terms
+        Sinv_y = err / tf.reshape(Dff, [self.num_data, 1])
         c1 = tf.matmul(Lbinv_Kbf, Sinv_y)
         c2 = tf.matmul(Lbinv_Kba, Sainv_ma)
         c3 = - alpha * tf.matmul(Lbinv_Kba_Da_LM, Qinv_LMT_Sainv_ma)
