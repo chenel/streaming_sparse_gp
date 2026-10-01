@@ -192,8 +192,8 @@ class OSGPR_PEP(GPModel, InternalDataTrainingLossMixin):
     NIPS 2017
     """
 
-    def __init__(self, data, kernel, mu_old, Su_old, Kaa_old, Z_old, Z, alpha, 
-            mean_function=None):
+    def __init__(self, data, kernel, mu_old, Su_old, Kaa_old, Z_old, Z, alpha,
+            mean_function=None, noise_pull_dims=None, noise_floor=1e-2, noise_exponent=2.0):
         """
         X is a data matrix, size N x D
         Y is a data matrix, size N x R
@@ -212,6 +212,18 @@ class OSGPR_PEP(GPModel, InternalDataTrainingLossMixin):
         self.inducing_variable = InducingPoints(Z)
         self.num_data = self.X.shape[0]
         self.alpha = alpha
+        # Optional heteroscedastic noise; see _noise_variance().  Default None reproduces
+        # the scalar-noise behaviour exactly.
+        self.noise_pull_dims = noise_pull_dims
+        self.noise_floor = noise_floor
+        self.noise_exponent = noise_exponent
+        if noise_pull_dims is not None:
+            self.noise_pull_weights = gpflow.Parameter(
+                np.ones(len(noise_pull_dims)), transform=gpflow.utilities.positive())
+            # The scalar likelihood variance plays no part once the noise is
+            # per-observation; leaving it trainable would add a parameter the objective
+            # never sees.
+            gpflow.set_trainable(self.likelihood.variance, False)
         
         self.mu_old = tf.Variable(mu_old, shape=tf.TensorShape(None), trainable=False)
         self.M_old = Z_old.shape[0]
@@ -219,12 +231,50 @@ class OSGPR_PEP(GPModel, InternalDataTrainingLossMixin):
         self.Kaa_old = tf.Variable(Kaa_old, shape=tf.TensorShape(None), trainable=False)
         self.Z_old = tf.Variable(Z_old, shape=tf.TensorShape(None), trainable=False)
 
+    def _noise_variance(self):
+        """Per-observation noise variance.
+
+        A single scalar noise is provably wrong for reweighting targets.  At zero pulls
+        every event's weight is exactly 1 by construction, so the conditional variance
+        vanishes identically on that hyperplane and grows away from it; a constant cannot
+        represent that.  Here
+
+            sigma2_i = sum_j w_j * (noise_floor + |theta_ij| ** noise_exponent)
+
+        one weight per systematic and nothing per observation: an observation's scale is
+        set by its own pull vector, a known input rather than an estimated quantity.
+
+        Note what this deliberately does NOT have: a separate overall noise level
+        multiplying the sum.  Observations away from zero pull constrain only the product
+        of such a level with the per-axis weights, so the split between them would be
+        fixed by the zero-pull rows alone -- and those are rows whose residual is exactly
+        zero by construction.  A parameter answerable only to rows the model already gets
+        right is driven to zero, taking the fitted noise with it.  Folding the floor
+        inside the sum welds the zero-pull variance to the per-axis weights, which the
+        scattering observations hold up.
+
+        noise_floor is therefore a dimensionless ratio, not a variance: it says how much
+        more reliable a zero-pull row is than a unit-pull one.  It must stay strictly
+        positive, or the log(Dff / sigma2) term in the objective diverges on those rows.
+
+        The exponent is the leading behaviour of a variance that must vanish at the
+        origin; exact where the response is linear in the pull, approximate otherwise.
+        noise_exponent makes it explicit rather than implied, since nothing about the
+        method requires it to be 2.
+        """
+        if self.noise_pull_dims is None:
+            return self.likelihood.variance
+        theta = tf.gather(self.X, self.noise_pull_dims, axis=1)
+        return tf.reduce_sum(
+            self.noise_pull_weights
+            * (self.noise_floor + tf.pow(tf.abs(theta), self.noise_exponent)), axis=1)
+
     def _common_terms(self):
         Mb = self.inducing_variable.num_inducing
         Ma = self.M_old
         # jitter = gpflow.default_jitter()
         jitter = gpflow.utilities.to_default_float(1e-4)
-        sigma2 = self.likelihood.variance
+        sigma2 = self._noise_variance()
         sigma = tf.sqrt(sigma2)
         alpha = self.alpha
 
@@ -303,7 +353,7 @@ class OSGPR_PEP(GPModel, InternalDataTrainingLossMixin):
 
         Mb = self.inducing_variable.num_inducing
         Ma = self.M_old
-        sigma2 = self.likelihood.variance
+        sigma2 = self._noise_variance()
         sigma = tf.sqrt(sigma2)
         alpha = self.alpha
         Saa = self.Su_old
