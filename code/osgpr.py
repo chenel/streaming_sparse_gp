@@ -193,7 +193,8 @@ class OSGPR_PEP(GPModel, InternalDataTrainingLossMixin):
     """
 
     def __init__(self, data, kernel, mu_old, Su_old, Kaa_old, Z_old, Z, alpha,
-            mean_function=None, noise_pull_dims=None, noise_floor=1e-2, noise_exponent=2.0):
+            mean_function=None, noise_pull_dims=None, noise_floor=1e-2, noise_exponent=2.0,
+                 noise_amplitude=None, fit_noise_exponent=False):
         """
         X is a data matrix, size N x D
         Y is a data matrix, size N x R
@@ -217,9 +218,23 @@ class OSGPR_PEP(GPModel, InternalDataTrainingLossMixin):
         self.noise_pull_dims = noise_pull_dims
         self.noise_floor = noise_floor
         self.noise_exponent = noise_exponent
+        # Per-row amplitude, supplied rather than fitted.  See _noise_variance().
+        self.noise_amplitude = (None if noise_amplitude is None else
+                                tf.constant(np.reshape(np.asarray(noise_amplitude,
+                                                                  dtype=np.float64), [-1]),
+                                            dtype=tf.float64))
         if noise_pull_dims is not None:
             self.noise_pull_weights = gpflow.Parameter(
                 np.ones(len(noise_pull_dims)), transform=gpflow.utilities.positive())
+            # One exponent per knob when fitted: the measured growth of the conditional
+            # variance with |theta| is not 2 for every knob (2.6 for one of the three in
+            # studies/weight-distributions/), and a shared value has to compromise.
+            if fit_noise_exponent:
+                self.noise_exponents = gpflow.Parameter(
+                    np.full(len(noise_pull_dims), float(noise_exponent)),
+                    transform=gpflow.utilities.positive())
+            else:
+                self.noise_exponents = None
             # The scalar likelihood variance plays no part once the noise is
             # per-observation; leaving it trainable would add a parameter the objective
             # never sees.
@@ -239,7 +254,15 @@ class OSGPR_PEP(GPModel, InternalDataTrainingLossMixin):
         vanishes identically on that hyperplane and grows away from it; a constant cannot
         represent that.  Here
 
-            sigma2_i = sum_j w_j * (noise_floor + |theta_ij| ** noise_exponent)
+            sigma2_i = a_i * sum_j w_j * (noise_floor + |theta_ij| ** p_j)
+
+        a_i is an optional per-row amplitude, supplied by the caller rather than fitted.
+        It exists because this form is otherwise a function of the pulls alone, with no
+        dependence on the observables at all -- and the observable dependence is the
+        largest measured feature of the noise (see studies/weight-distributions/).  Being
+        data rather than a parameter, it does not reintroduce the degeneracy described
+        below: there is nothing for the optimizer to trade against w_j.  The caller is
+        responsible for normalizing it, or the overall scale is split arbitrarily.
 
         one weight per systematic and nothing per observation: an observation's scale is
         set by its own pull vector, a known input rather than an estimated quantity.
@@ -264,10 +287,21 @@ class OSGPR_PEP(GPModel, InternalDataTrainingLossMixin):
         """
         if self.noise_pull_dims is None:
             return self.likelihood.variance
-        theta = tf.gather(self.X, self.noise_pull_dims, axis=1)
-        return tf.reduce_sum(
-            self.noise_pull_weights
-            * (self.noise_floor + tf.pow(tf.abs(theta), self.noise_exponent)), axis=1)
+        theta = tf.abs(tf.gather(self.X, self.noise_pull_dims, axis=1))
+        p = (self.noise_exponent if self.noise_exponents is None
+             else self.noise_exponents)
+        # |theta| ** p is 0 at theta = 0, but its derivative with respect to p involves
+        # log(theta), so a fitted exponent produces NaN gradients on exactly the rows
+        # where theta vanishes -- the zero-pull anchors, thousands of them per chunk.
+        # The doubled tf.where keeps the forward value and gives the gradient a finite
+        # path: the inner one hides the zeros from tf.pow, the outer one restores them.
+        nz = theta > 0.0
+        safe = tf.where(nz, theta, tf.ones_like(theta))
+        powed = tf.where(nz, tf.pow(safe, p), tf.zeros_like(theta))
+        sigma2 = tf.reduce_sum(self.noise_pull_weights * (self.noise_floor + powed), axis=1)
+        if self.noise_amplitude is not None:
+            sigma2 = sigma2 * self.noise_amplitude
+        return sigma2
 
     def _common_terms(self):
         Mb = self.inducing_variable.num_inducing
