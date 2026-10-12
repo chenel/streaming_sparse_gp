@@ -20,7 +20,7 @@ class SGPR_PEP(GPModel, InternalDataTrainingLossMixin):
 
     def __init__(self, data, kernel, Z, alpha, mean_function=None,
                  noise_pull_dims=None, noise_floor=1e-2, noise_exponent=2.0,
-                 noise_amplitude=None, fit_noise_exponent=False):
+                 noise_amplitude=None, fit_noise_exponent=False, noise_variance=None):
         """
         X is a data matrix, size N x D
         Y is a data matrix, size N x R
@@ -48,6 +48,18 @@ class SGPR_PEP(GPModel, InternalDataTrainingLossMixin):
                                 tf.constant(np.reshape(np.asarray(noise_amplitude,
                                                                   dtype=np.float64), [-1]),
                                             dtype=tf.float64))
+        # Per-row noise variance supplied whole, estimated outside the model: nothing about
+        # the noise is fitted, and the objective sees only the kernel and the inducing
+        # points.  Excludes the parametric form above; see _noise_variance().
+        if noise_variance is not None and noise_pull_dims is not None:
+            raise ValueError("noise_variance replaces the parametric noise; "
+                             "give it or noise_pull_dims, not both")
+        self.known_noise_variance = (None if noise_variance is None else
+                                     tf.constant(np.reshape(np.asarray(noise_variance,
+                                                                       dtype=np.float64), [-1]),
+                                                 dtype=tf.float64))
+        if noise_variance is not None:
+            gpflow.set_trainable(self.likelihood.variance, False)
         if noise_pull_dims is not None:
             self.noise_pull_weights = gpflow.Parameter(
                 np.ones(len(noise_pull_dims)), transform=gpflow.utilities.positive())
@@ -103,7 +115,13 @@ class SGPR_PEP(GPModel, InternalDataTrainingLossMixin):
         origin; exact where the response is linear in the pull, approximate otherwise.
         noise_exponent makes it explicit rather than implied, since nothing about the
         method requires it to be 2.
+
+        If noise_variance was given, it is returned as it is: a variance per training row,
+        computed outside the model -- in the GENIE notebook, the per-row variances of a
+        Student-t fitted by EM, from the previous chunk's residuals.  Nothing is fitted.
         """
+        if self.known_noise_variance is not None:
+            return self.known_noise_variance
         if self.noise_pull_dims is None:
             return self.likelihood.variance
         theta = tf.abs(tf.gather(self.X, self.noise_pull_dims, axis=1))
