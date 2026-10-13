@@ -229,10 +229,12 @@ class OSGPR_PEP(GPModel, InternalDataTrainingLossMixin):
         if noise_variance is not None and noise_pull_dims is not None:
             raise ValueError("noise_variance replaces the parametric noise; "
                              "give it or noise_pull_dims, not both")
+        # A non-trainable variable rather than a constant, so a caller can reweight the rows
+        # and refit the same model (the EM iterations of a Student-t) with .assign().
         self.known_noise_variance = (None if noise_variance is None else
-                                     tf.constant(np.reshape(np.asarray(noise_variance,
+                                     tf.Variable(np.reshape(np.asarray(noise_variance,
                                                                        dtype=np.float64), [-1]),
-                                                 dtype=tf.float64))
+                                                 dtype=tf.float64, trainable=False))
         if noise_variance is not None:
             gpflow.set_trainable(self.likelihood.variance, False)
         if noise_pull_dims is not None:
